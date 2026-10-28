@@ -36,6 +36,7 @@ const schema = z.object({
   LOGIN_LOCK_MINUTES: z.coerce.number().default(15),
 
   STUN_URLS: z.string().default('stun:stun.l.google.com:19302'),
+  REQUIRE_TURN: bool(false),
   TURN_URLS: z.string().default(''),
   TURN_STATIC_AUTH_SECRET: z.string().default(''),
   TURN_CREDENTIAL_TTL_SECONDS: z.coerce.number().default(3600),
@@ -66,8 +67,8 @@ if (isProd) {
   const problems = [];
   if (env.JWT_ACCESS_SECRET.startsWith('dev-only')) problems.push('JWT_ACCESS_SECRET');
   if (env.OTP_HMAC_SECRET.startsWith('dev-only')) problems.push('OTP_HMAC_SECRET');
-  if (!env.TURN_URLS) problems.push('TURN_URLS (a TURN server is required outside development)');
-  if (!env.TURN_STATIC_AUTH_SECRET) problems.push('TURN_STATIC_AUTH_SECRET');
+  if (env.REQUIRE_TURN && !env.TURN_URLS) problems.push('TURN_URLS (required when REQUIRE_TURN=true)');
+  if (env.REQUIRE_TURN && !env.TURN_STATIC_AUTH_SECRET) problems.push('TURN_STATIC_AUTH_SECRET');
   if (env.EXPOSE_DEV_OTP) problems.push('EXPOSE_DEV_OTP must be false');
   if (problems.length) {
     console.error(`Refusing to start in ${env.NODE_ENV}: fix ${problems.join(', ')}`);
