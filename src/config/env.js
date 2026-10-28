@@ -46,6 +46,7 @@ const schema = z.object({
   CALL_RECONNECT_GRACE_SECONDS: z.coerce.number().default(45),
 
   UPLOAD_DIR: z.string().default('./uploads'),
+  FILE_STORAGE: z.enum(['local', 'mongodb']).default(['production', 'staging'].includes(process.env.NODE_ENV) ? 'mongodb' : 'local'),
   UPLOAD_MAX_MB: z.coerce.number().default(15),
 
   FIREBASE_SERVICE_ACCOUNT_JSON: z.string().default(''),

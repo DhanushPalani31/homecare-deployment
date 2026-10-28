@@ -5,6 +5,8 @@ import crypto from 'node:crypto';
 import multer from 'multer';
 import { z } from 'zod';
 import jwt from 'jsonwebtoken';
+import mongoose from 'mongoose';
+import { finished } from 'node:stream/promises';
 import { env } from '../config/env.js';
 import { FileObject, User } from '../models/index.js';
 import { idParam, objectId, validate } from '../middleware/common.js';
@@ -13,10 +15,7 @@ import { audit } from '../services/auditService.js';
 import { ROLES } from '../utils/constants.js';
 import { badRequest, forbidden, notFound } from '../utils/errors.js';
 
-/**
- * Local-disk storage for development. In production swap `storeFile`/`openFile` for an
- * encrypted object store (e.g. S3 with SSE-KMS) and serve via short-lived signed URLs.
- */
+// Production uploads live in MongoDB so free hosting restarts preserve them.
 const UPLOAD_ROOT = path.resolve(env.UPLOAD_DIR);
 fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
 
@@ -44,6 +43,14 @@ function sniff(buf) {
 
 async function storeFile(buffer, mime) {
   const key = `${new Date().toISOString().slice(0, 7)}/${crypto.randomUUID()}${ALLOWED.get(mime)}`;
+  if (env.FILE_STORAGE === 'mongodb') {
+    const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, { bucketName: 'uploads' });
+    const stream = bucket.openUploadStream(key, { metadata: { mimeType: mime } });
+    const completion = finished(stream);
+    stream.end(buffer);
+    await completion;
+    return key;
+  }
   const full = path.join(UPLOAD_ROOT, key);
   await fs.promises.mkdir(path.dirname(full), { recursive: true });
   await fs.promises.writeFile(full, buffer, { mode: 0o600 });
@@ -145,22 +152,32 @@ async function authorizeFileAccess(user, fileId) {
   return doc;
 }
 
-function streamFile(res, doc) {
+async function streamFile(res, doc) {
   const full = path.join(UPLOAD_ROOT, doc.storageKey);
-  if (!full.startsWith(UPLOAD_ROOT) || !fs.existsSync(full)) throw notFound('File content missing');
+  let content;
+  if (env.FILE_STORAGE === 'mongodb') {
+    const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, { bucketName: 'uploads' });
+    const entry = await bucket.find({ filename: doc.storageKey }).next();
+    if (!entry) throw notFound('File content missing');
+    content = bucket.openDownloadStream(entry._id);
+  } else {
+    if (!full.startsWith(`${UPLOAD_ROOT}${path.sep}`) || !fs.existsSync(full)) throw notFound('File content missing');
+    content = fs.createReadStream(full);
+  }
   res.set({
     'Content-Type': doc.mimeType,
     'Content-Disposition': `inline; filename="${encodeURIComponent(doc.title || 'document')}"`,
     'Cache-Control': 'private, no-store',
     'X-Content-Type-Options': 'nosniff',
   });
-  fs.createReadStream(full).pipe(res);
+  content.on('error', () => res.destroy());
+  content.pipe(res);
 }
 
 router.get('/files/:id', validate({ params: idParam }), async (req, res) => {
   const doc = await authorizeFileAccess(req.user, req.params.id);
   await audit(req, 'FILE_DOWNLOAD', 'FileObject', doc._id);
-  streamFile(res, doc);
+  await streamFile(res, doc);
 });
 
 /**
@@ -189,5 +206,5 @@ publicFileRouter.get('/files/download/:token', async (req, res) => {
   const doc = await FileObject.findOne({ _id: claims.fid, deletedAt: null }).select('+storageKey');
   if (!doc) throw notFound('File not found');
   await audit({ ip: req.ip, id: req.id, get: (h) => req.get(h), user: { _id: claims.sub } }, 'FILE_DOWNLOAD', 'FileObject', doc._id, undefined, { via: 'signed-link' });
-  streamFile(res, doc);
+  await streamFile(res, doc);
 });
